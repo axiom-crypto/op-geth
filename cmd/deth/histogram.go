@@ -54,7 +54,7 @@ func (h *Histogram[T]) ToCSV(filename string) error {
 		// if ratio < 0.01 {
 		// 	continue
 		// }
-		sb.WriteString(fmt.Sprintf("%v: %.02f%% (%d)\n", k, ratio, h.buckets[k]))
+		sb.WriteString(fmt.Sprintf("%v, %.02f, %d\n", k, ratio, h.buckets[k]))
 	}
 	if err := os.WriteFile(filename, []byte(sb.String()), 0o755); err != nil {
 		return fmt.Errorf("writing to file: %s", err)

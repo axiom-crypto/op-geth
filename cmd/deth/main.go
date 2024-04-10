@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"os"
+	//"sync"
 	"time"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/console/prompt"
@@ -81,8 +83,8 @@ func deth(ctx *cli.Context) error {
 		Type:      "",
 		Directory: datadir + "/geth" + "/chaindata",
 		Namespace: "",
-		Cache:     1024 * 50 / 100,
-		Handles:   256,
+		Cache:     2048,
+		Handles:   1024,
 		ReadOnly:  true,
 	})
 
@@ -99,11 +101,7 @@ func deth(ctx *cli.Context) error {
 	if option == "access_list" {
 		analyseAccessLists(db)
 	} else if option == "storage_trie" {
-		analyseStorageTries(db, true)
-	} else if option == "account_trie" {
-		analyseAccountTries(db)
-	} else if option == "accounts" {
-		analyseStorageTries(db, false)
+		analyseStorageTries(db)
 	} else {
 		fmt.Println("account_trie, storage_trie, or access_list")
 	}
@@ -111,124 +109,26 @@ func deth(ctx *cli.Context) error {
 	return nil
 }
 
-func analyseAccountTries(db ethdb.Database) {
-	statedb := state.NewDatabase(db)
-
-	b := rawdb.ReadHeadBlock(db)
-	root := b.Root()
-	trie, err := statedb.OpenTrie(root)
-
-	if err != nil {
-		fmt.Println("Failed to open Trie!", err)
-		return
-	}
-
-	analyseAccounts(root, statedb, trie)
-}
-
-func analyseAccounts(trieRoot common.Hash, statedb state.Database, trie state.Trie) {
-	lastReport := time.Now()
-
-	_addresses := [...]string{
-		"0x4200000000000000000000000000000000000016",
-		"0x4200000000000000000000000000000000000006",
-		"0xbaed383ede0e5d9d72430661f3285daa77e9439f",
-		"0x3304e22ddaa22bcdc5fca2269b418046ae7b566a",
-		"0xcf205808ed36593aa40a44f10c7f7c2f67d4a4d4",
-		"0x831be9e08185eba7d88aab1efc059336babef430",
-		"0xfd92f4e91d54b9ef91cc3f97c011a6af0c2a7eda",
-		"0x224d8fd7ab6ad4c6eb4611ce56ef35dec2277f03",
-		"0x5d639027789bd9d53c1a32dc1cb18e6f1a16234c",
-		"0x9c3631dde5c8316be5b7554b0ccd2631c15a9a05",
-		"0xecb03b9a0e7f7b5e261d3ef752865af6621a54fe",
-		"0x3a972d7b008816abb41287cdf93cb1eb0236eb68",
-		"0x79bf8fe8f0c6986b447a9394852072542972ce9c",
-		"0x0977250dbefe33086cebfb73970e0473c592fc54",
-		"0x4869892c8088d9057ad7d0e5189ae8c3278f8877",
-		"0x739120ade7ed878fca5bbdb806263a8258fe2360",
-		"0xf1b98463d6574c998f03e6edf6d7b4e5f917f915",
-		"0x4e3ae00e8323558fa5cac04b152238924aa31b60",
-		"0x7bf90111ad7c22bec9e9dff8a01a44713cc1b1b6",
-		"0xbfdb66a6783a6dc757f539139c68bed75eb491c8",
-		"0xc32df201476bb79318c32fd696b2ccdcc5f9a909",
-		"0x7a560269480ef38b885526c8bbecdc4686d8bf7a",
-		"0x5593b57d06458f62b1a4f31a997945a3b51fc2fd",
-		"0x1ebfa746da64b049937988c51e77a138250846ca",
-	}
-
-	addresses := make([]common.Address, len(_addresses))
-	for i, addr := range _addresses {
-		addresses[i] = common.HexToAddress(addr)
-	}
-
-	for _, addr := range addresses {
-		fmt.Println(addr)
-		// Histograms for Storage Tries.
-		histStorageTrieDepths := Histogram[int]{
-			title: "Storage Trie - Depths - " + addr.String(),
-			buckets: map[int]int64{},
-			total: 0,
-		}
-
-		account, _ := trie.GetAccount(addr)
-
-		if account == nil {
-			fmt.Println("SKIP account")
-			continue
-		}
-
-		storageTrie, err := statedb.OpenStorageTrie(trieRoot, addr, account.Root, nil)
-
-		if err != nil {
-			fmt.Println("failed to open storage trie: %s", err)
-			return
-		}
-
-		var storageTriesNumSlots int64
-		storageIter, _ := storageTrie.NodeIterator(nil)
-		for storageIter.Next(true) {
-			if storageIter.Leaf() {
-				storageTriesNumSlots += 1
-				leafProof := storageIter.LeafProof()
-				histStorageTrieDepths.Observe(len(leafProof))
-			}
-
-			if time.Since(lastReport) > time.Minute {
-
-				// // Storage tries stdout reports.
-				fmt.Printf("Walked %d Storage Slots for %s:\n", storageTriesNumSlots, addr.String())
-				histStorageTrieDepths.Print(os.Stdout)
-
-				fmt.Printf("-----\n\n")
-
-				lastReport = time.Now()
-			}
-		}
-
-		if storageIter.Error() != nil {
-			fmt.Println("Failed to traverse storage trie: %s", err)
-			return
-		}
-
-		fmt.Println("Finished walking storage trie for", addr.String())
-		fmt.Println("Total storage slots:", storageTriesNumSlots)
-		fmt.Println("Storage trie depth histogram:")
-		histStorageTrieDepths.Print(os.Stdout)
-		fmt.Println("-----\n")
-		histStorageTrieDepths.ToCSV("storage_trie_" + addr.String() + ".csv")
-	}
-}
-
-func analyseStorageTries(db ethdb.Database, analyseAccountStorage bool) {
+func analyseStorageTries(db ethdb.Database) {
 	statedb := state.NewDatabase(db)
 	triedb := statedb.TrieDB()
 
 	b := rawdb.ReadHeadBlock(db)
 
-	analyseTrie(b.Root(), statedb, triedb, analyseAccountStorage)
+	analyseTrie(b.Root(), statedb, triedb, byte(0xbe))
+	//var wg sync.WaitGroup
+	//for i := 0; i < 256; i++ {
+	//	wg.Add(1)
+
+	//	go func(r common.Hash, s state.Database, t *trie.Database, i byte) {
+	//		defer wg.Done()
+	//		analyseTrie(r, s, t, i)
+	//	}(b.Root(), statedb, triedb, byte(i))
+	//}
+	//wg.Wait()
 }
 
-func analyseTrie(trieRoot common.Hash, statedb state.Database, triedb *trie.Database, analyseAccountStorage bool) {
+func analyseTrie(trieRoot common.Hash, statedb state.Database, triedb *trie.Database, index byte) {
 	t, err := state.Database.OpenTrie(statedb, trieRoot)
 
 	if err != nil {
@@ -252,7 +152,10 @@ func analyseTrie(trieRoot common.Hash, statedb state.Database, triedb *trie.Data
 		total: 0,
 	}
 
-	iter, err := t.NodeIterator(nil)
+	startNode := [32]byte{}
+	startNode[0] = index
+
+	iter, err := t.NodeIterator(startNode[:])
 
 	if err != nil {
 		fmt.Println("Couldn't iterate Trie!", err)
@@ -264,6 +167,9 @@ func analyseTrie(trieRoot common.Hash, statedb state.Database, triedb *trie.Data
 
 	for iter.Next(true) {
 		if iter.Leaf() {
+			if iter.LeafKey()[0] != index {
+				break
+			}
 			leafNodes++
 
 			leafProof := iter.LeafProof()
@@ -274,35 +180,34 @@ func analyseTrie(trieRoot common.Hash, statedb state.Database, triedb *trie.Data
 				fmt.Println("ERROR: invalid account encountered during traversal: %s", err)
 				return
 			}
-			if acc.Root != emptyRoot && analyseAccountStorage {
+			if acc.Root != emptyRoot {
 				storageTries++
-				id := trie.StorageTrieID(trieRoot, common.BytesToHash(iter.LeafKey()), acc.Root)
-				storageTrie, err := trie.NewStateTrie(id, triedb)
-				if err != nil {
-					fmt.Println("ERROR: failed to open storage trie: %s", err)
-					return
-				}
+				c := make(chan Histogram[int])
 
-				var storageTriesNumSlots int64
-				storageIter, _ := storageTrie.NodeIterator(nil)
-				for storageIter.Next(true) {
-					if storageIter.Leaf() {
-						storageTriesNumSlots += 1
-						leafProof := storageIter.LeafProof()
-						histStorageTrieDepths.Observe(len(leafProof))
+				for i := 0; i < 256; i++ {
+					go func(r common.Hash, l common.Hash, tdb *trie.Database, a types.StateAccount, c chan Histogram[int], i byte) {
+						processStorage(r, l, tdb, a, c, i)
+					}(trieRoot, common.BytesToHash(iter.LeafKey()), triedb, acc, c, byte(i))
+				}
+			        for i := 0; i < 256; i++ {
+			                result := <-c
+					histStorageTriesNumSlots.Observe(result.total)
+					for key := range result.sortedKeys() {
+						if result.buckets[key] > 0 {
+							histStorageTrieDepths.buckets[key] += result.buckets[key]
+						}
 					}
-				}
-				histStorageTriesNumSlots.Observe(storageTriesNumSlots)
-
-				if storageIter.Error() != nil {
-					fmt.Println("ERROR: Failed to traverse storage trie: %s", err)
-					return
+					histStorageTrieDepths.total += result.total
+			        }
+				if time.Since(lastReport) > time.Minute*1 {
+					stateTrieReport(leafNodes, storageTries, histStateTrieDepths, histStorageTrieDepths, histStorageTriesNumSlots, startNode[:])
+					lastReport = time.Now()
 				}
 			}
 		}
 
 		if time.Since(lastReport) > time.Minute*1 {
-			stateTrieReport(leafNodes, storageTries, histStateTrieDepths, histStorageTrieDepths, histStorageTriesNumSlots)
+			stateTrieReport(leafNodes, storageTries, histStateTrieDepths, histStorageTrieDepths, histStorageTriesNumSlots, startNode[:])
 			lastReport = time.Now()
 		}
 	}
@@ -313,28 +218,68 @@ func analyseTrie(trieRoot common.Hash, statedb state.Database, triedb *trie.Data
 	}
 
 	fmt.Println("Dumping final report.")
-	stateTrieReport(leafNodes, storageTries, histStateTrieDepths, histStorageTrieDepths, histStorageTriesNumSlots)
+	stateTrieReport(leafNodes, storageTries, histStateTrieDepths, histStorageTrieDepths, histStorageTriesNumSlots, startNode[:])
 }
 
-func stateTrieReport(leafNodes int, storageTries int64, histStateTrieDepths Histogram[int], histStorageTrieDepths Histogram[int], histStorageTriesNumSlots Histogram[int64]) {
+func processStorage(trieRoot common.Hash, leafKey common.Hash, triedb *trie.Database, acc types.StateAccount, c chan Histogram[int], index byte) {
+	lastReport := time.Now()
+	histStorageTrieDepths := Histogram[int]{
+		title: "Storage Trie - Depths",
+		buckets: map[int]int64{},
+		total: 0,
+	}
+
+	id := trie.StorageTrieID(trieRoot, leafKey, acc.Root)
+	storageTrie, err := trie.NewStateTrie(id, triedb)
+	if err != nil {
+		fmt.Println("ERROR: failed to open storage trie: %s", err)
+		c <- histStorageTrieDepths
+		return
+	}
+
+	startNode := [32]byte{}
+	startNode[0] = index
+	storageIter, err := storageTrie.NodeIterator(startNode[:])
+
+	var numSlots int64
+	for storageIter.Next(true) {
+		if storageIter.Leaf() {
+			numSlots++
+			if storageIter.LeafKey()[0] != index {
+				break
+			}
+			leafProof := storageIter.LeafProof()
+			histStorageTrieDepths.Observe(len(leafProof))
+		}
+		if time.Since(lastReport) > time.Minute*1 {
+			fmt.Println("Processing storage shard %s-%d (%d)", acc.Root, index, numSlots)
+			lastReport = time.Now()
+		}
+	}
+	if storageIter.Error() != nil {
+		fmt.Println("ERROR: Failed to traverse storage trie: %s", err)
+		c <- histStorageTrieDepths
+		return
+	}
+
+	c <- histStorageTrieDepths
+}
+
+func stateTrieReport(leafNodes int, storageTries int64, histStateTrieDepths Histogram[int], histStorageTrieDepths Histogram[int], histStorageTriesNumSlots Histogram[int64], startFrom []byte) {
+	start := hex.EncodeToString(startFrom)
+
 	// State Trie stdout reports.
-	fmt.Printf("Walked %d (EOA + SC) accounts:\n", leafNodes)
-	histStateTrieDepths.Print(os.Stdout)
-	fmt.Println()
+	fmt.Printf("(%s) Walked %d (EOA + SC) accounts:\n", start, leafNodes)
 
 	// Storage tries stdout reports.
-	fmt.Printf("Walked %d Storage Tries:\n", storageTries)
-	histStorageTrieDepths.Print(os.Stdout)
-	histStorageTriesNumSlots.Print(os.Stdout)
-
-	fmt.Printf("-----\n\n")
+	fmt.Printf("(%s) Walked %d Storage Tries:\n", start, storageTries)
 
 	// State Trie.
-	histStateTrieDepths.ToCSV("statetrie_depth.csv")
+	histStateTrieDepths.ToCSV("statetrie_depth_" + start + ".csv")
 
 	// Storage Tries.
-	histStorageTrieDepths.ToCSV("storagetrie_depth.csv")
-	histStorageTriesNumSlots.ToCSV("storagetrie_numslots.csv")
+	histStorageTrieDepths.ToCSV("storagetrie_depth_" + start + ".csv")
+	histStorageTriesNumSlots.ToCSV("storagetrie_numslots_" + start + ".csv")
 
 }
 
